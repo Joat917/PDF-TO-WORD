@@ -15,10 +15,11 @@ from PyQt5.QtWidgets import (
 
 from a import convert
 from b import PDFConvertManager
+from n import svg_data, SvgIconManager
 import traceback
 PRINT_ERROR = True  # 是否在控制台打印所有错误信息
 
-ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+# ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 ICON_FILES = {
     "settings": "settings.svg",
     "file_list": "list_ul.svg",
@@ -30,6 +31,7 @@ ICON_FILES = {
     "copy": "copy.svg",
     "refresh": "refresh.svg",
     "help": "help.svg",
+    "convert": "convert.svg",
 }
 # get more icons from https://tabler-icons.io/
 
@@ -265,6 +267,7 @@ class MainWindow(QMainWindow):
         self.resize(800, 500)
 
         self._icons = self._load_icons()
+        self.setWindowIcon(self._icons["convert"])
 
         self._added_paths = set()          # normalized absolute path -> None
         self._src_path_to_row = {}         # normalized absolute path -> row
@@ -277,13 +280,16 @@ class MainWindow(QMainWindow):
 
     # ---------- icons ----------
     def _load_icons(self):
-        icons = {}
-        for name, filename in ICON_FILES.items():
-            path = os.path.join(ICON_DIR, filename)
-            if not os.path.isfile(path):
-                raise FileNotFoundError(f"缺少图标文件: {path}")
-            icons[name] = QIcon(path)
-        return icons
+        # icons = {}
+        # for name, filename in ICON_FILES.items():
+        #     path = os.path.join(ICON_DIR, filename)
+        #     if not os.path.isfile(path):
+        #         raise FileNotFoundError(f"缺少图标文件: {path}")
+        #     icons[name] = QIcon(path)
+        # return icons
+        svg_data_mapped = {name:svg_data[filename] for name, filename in ICON_FILES.items()}
+        return SvgIconManager(svg_data_mapped)
+
 
     # ---------- UI ----------
     def _build_ui(self):
