@@ -24,6 +24,16 @@ def _run_convert(convert_func, src_path, dest_path, password, conn):
     sys.stdout = PipeWriter(conn)
     sys.stderr = PipeWriter(conn)
 
+    import logging
+    root = logging.getLogger()
+    formatters = []
+    for handler in root.handlers:
+        formatters.append(handler.formatter)
+        root.removeHandler(handler)
+    handler = logging.StreamHandler(stream=sys.stdout)
+    handler.setFormatter(formatters[0] if formatters else logging.Formatter())
+    root.addHandler(handler)
+
     try:
         convert_func(src_path, dest_path, password)
     except Exception:

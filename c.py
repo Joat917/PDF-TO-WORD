@@ -4,7 +4,7 @@ import sys
 from PyQt5.QtCore import (
     Qt, QThread, QTimer, QObject, QSize, pyqtSignal, pyqtSlot
 )
-from PyQt5.QtGui import QIcon, QColor, QBrush
+from PyQt5.QtGui import QIcon, QColor, QBrush, QFontDatabase
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QToolButton, QButtonGroup, QLabel, QLineEdit,
@@ -52,6 +52,33 @@ STATUS_COLOR = {
 }
 
 END_STATUS = {"success", "failed", "stopped"}
+
+
+# 一个普通的支持拖放的 QWidget，用于接收文件或文件夹拖放
+class DropWidget(QWidget):
+    files_dropped = pyqtSignal(list)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        paths = [
+            url.toLocalFile()
+            for url in event.mimeData().urls()
+            if url.isLocalFile()
+        ]
+        if paths:
+            self.files_dropped.emit(paths)
+        event.acceptProposedAction()
 
 
 class FileListWidget(QListWidget):
@@ -113,6 +140,8 @@ class LogDialog(QDialog):
 
         self._log_edit = QPlainTextEdit()
         self._log_edit.setReadOnly(True)
+        self._log_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._log_edit.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
 
         copy_btn = QPushButton()
         if "copy" in self._icons:
@@ -141,10 +170,14 @@ class LogDialog(QDialog):
     def on_log_ready(self, task_id, log):
         if task_id == self._task_id:
             self._log_edit.setPlainText(log)
+            scrollbar = self._log_edit.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def on_log_error(self, task_id, error):
         if task_id == self._task_id:
             self._log_edit.setPlainText(f"获取日志失败: {error}")
+            scrollbar = self._log_edit.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def _copy_log(self):
         self._log_edit.copy()
@@ -228,7 +261,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF 转换工具")
+        self.setWindowTitle("PDF To Word")
         self.resize(800, 500)
 
         self._icons = self._load_icons()
@@ -273,7 +306,6 @@ class MainWindow(QMainWindow):
         self.settings_btn.setIconSize(QSize(32, 32))
         self.settings_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.settings_btn.setCheckable(True)
-        self.settings_btn.setChecked(True)
         self.settings_btn.setToolTip("转换设置")
         self.settings_btn.setAutoRaise(True)
 
@@ -282,28 +314,32 @@ class MainWindow(QMainWindow):
         self.files_btn.setIconSize(QSize(32, 32))
         self.files_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.files_btn.setCheckable(True)
+        self.files_btn.setChecked(True)
         self.files_btn.setToolTip("文件列表")
         self.files_btn.setAutoRaise(True)
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
-        self._nav_group.addButton(self.settings_btn, 0)
-        self._nav_group.addButton(self.files_btn, 1)
+        self._nav_group.addButton(self.files_btn, 0)
+        self._nav_group.addButton(self.settings_btn, 1)
         self._nav_group.buttonClicked.connect(self._on_nav_clicked)
 
-        nav_layout.addWidget(self.settings_btn)
         nav_layout.addWidget(self.files_btn)
+        nav_layout.addWidget(self.settings_btn)
 
         # 右侧页面
         self.stack = QStackedWidget()
-        self.stack.addWidget(self._create_settings_page())  # 0
-        self.stack.addWidget(self._create_files_page())     # 1
+        self.stack.addWidget(self._create_files_page())
+        self.stack.addWidget(self._create_settings_page())
 
         root_layout.addWidget(nav)
         root_layout.addWidget(self.stack, 1)
 
     def _create_settings_page(self):
-        page = QWidget()
+        page = DropWidget()
+        page.setAcceptDrops(True)
+        page.files_dropped.connect(self._on_files_dropped)
+
         form = QFormLayout(page)
         form.setContentsMargins(20, 20, 20, 20)
 
@@ -341,7 +377,7 @@ class MainWindow(QMainWindow):
 
         self._empty_hint = QLabel("将 PDF 文件或文件夹拖拽到此处")
         self._empty_hint.setAlignment(Qt.AlignCenter)
-        self._empty_hint.setStyleSheet("color: #888888; font-size: 14px;")
+        self._empty_hint.setStyleSheet("color: #888888; font-size: 24px;")
         self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.list_widget.set_empty_hint(self._empty_hint)
 
