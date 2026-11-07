@@ -4,22 +4,23 @@ import sys
 from PyQt5.QtCore import (
     Qt, QThread, QTimer, QObject, QSize, pyqtSignal, pyqtSlot
 )
-from PyQt5.QtGui import QIcon, QColor, QBrush, QFontDatabase
+from PyQt5.QtGui import QIcon, QColor, QBrush, QFontDatabase, QPalette
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QToolButton, QButtonGroup, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QFileDialog, QFormLayout,
     QPushButton, QPlainTextEdit, QDialog, QMenu, QAbstractItemView,
-    QMessageBox
+    QMessageBox, QFrame, QSizePolicy, 
+    QStyledItemDelegate, QStyleOptionViewItem
 )
 
 from a import convert
 from b import PDFConvertManager
 from n import svg_data, SvgIconManager
+from i import STRINGS
 import traceback
 PRINT_ERROR = True  # 是否在控制台打印所有错误信息
 
-# ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 ICON_FILES = {
     "settings": "settings.svg",
     "file_list": "list_ul.svg",
@@ -36,12 +37,12 @@ ICON_FILES = {
 # get more icons from https://tabler-icons.io/
 
 STATUS_TEXT = {
-    "pending": "排队中",
-    "running": "运行中",
-    "success": "成功",
-    "failed": "失败",
-    "stopped": "已停止",
-    "submitting": "提交中",
+    "pending": STRINGS["pending"],
+    "running": STRINGS["running"],
+    "success": STRINGS["success"],
+    "failed": STRINGS["failed"],
+    "stopped": STRINGS["stopped"],
+    "submitting": STRINGS["submitting"],
 }
 
 STATUS_COLOR = {
@@ -83,12 +84,28 @@ class DropWidget(QWidget):
         event.acceptProposedAction()
 
 
+# 为了在选中状态下区分颜色，需要自定义绘制
+class StatusColorDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        fg = index.data(Qt.ForegroundRole)
+        if fg is not None:
+            # 复制一份 option，避免修改影响其他绘制
+            opt = QStyleOptionViewItem(option)
+            palette = opt.palette
+            # 同时覆盖普通文字和高亮文字颜色
+            palette.setBrush(QPalette.Text, fg)
+            palette.setBrush(QPalette.HighlightedText, fg)
+            opt.palette = palette
+            option = opt
+        super().paint(painter, option, index)
+
 class FileListWidget(QListWidget):
     files_dropped = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
+        self.setItemDelegate(StatusColorDelegate(self))
         self.setDragDropMode(QAbstractItemView.DropOnly)
         self._empty_hint = None
 
@@ -148,13 +165,13 @@ class LogDialog(QDialog):
         copy_btn = QPushButton()
         if "copy" in self._icons:
             copy_btn.setIcon(self._icons["copy"])
-        copy_btn.setToolTip("复制日志")
+        copy_btn.setToolTip(STRINGS["copy_log"])
         copy_btn.clicked.connect(self._copy_log)
 
         refresh_btn = QPushButton()
         if "refresh" in self._icons:
             refresh_btn.setIcon(self._icons["refresh"])
-        refresh_btn.setToolTip("刷新日志")
+        refresh_btn.setToolTip(STRINGS["refresh_log"])
         refresh_btn.clicked.connect(
             lambda: self.refresh_requested.emit(self._task_id)
         )
@@ -169,6 +186,11 @@ class LogDialog(QDialog):
         layout.addLayout(btn_layout)
         self.setLayout(layout)
 
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(500)
+        self._refresh_timer.timeout.connect(self._auto_refresh)
+        self._refresh_timer.start()
+
     def on_log_ready(self, task_id, log):
         if task_id == self._task_id:
             self._log_edit.setPlainText(log)
@@ -177,12 +199,24 @@ class LogDialog(QDialog):
 
     def on_log_error(self, task_id, error):
         if task_id == self._task_id:
-            self._log_edit.setPlainText(f"获取日志失败: {error}")
+            self._log_edit.setPlainText(STRINGS["on_log_error"].format(error))
             scrollbar = self._log_edit.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
 
     def _copy_log(self):
         self._log_edit.copy()
+
+    def _auto_refresh(self):
+        if self._task_status in ("pending", "running", "submitting"):
+            self.refresh_requested.emit(self._task_id)
+        else:
+            self._refresh_timer.stop()
+    
+    def update_task_status(self, status):
+        self._task_status = status
+        if status in ("success", "failed", "stopped") and self._refresh_timer.isActive():
+            self.refresh_requested.emit(self._task_id)
+            self._refresh_timer.stop()
 
 
 class Worker(QObject):
@@ -227,7 +261,7 @@ class Worker(QObject):
             self.task_stopped.emit(task_id, bool(ok))
         except Exception as e:
             if PRINT_ERROR: traceback.print_exc()
-            self.worker_error.emit(f"停止任务失败: {e}")
+            self.worker_error.emit(STRINGS["on_stop_task_error"].format(task_id, str(e)))
 
     @pyqtSlot(str)
     def get_log(self, task_id):
@@ -252,7 +286,7 @@ class Worker(QObject):
             self.tasks_updated.emit(tasks)
         except Exception as e:
             if PRINT_ERROR: traceback.print_exc()
-            self.worker_error.emit(f"轮询失败: {e}")
+            self.worker_error.emit(STRINGS["on_poll_tasks_error"].format(str(e)))
 
 
 class MainWindow(QMainWindow):
@@ -260,9 +294,11 @@ class MainWindow(QMainWindow):
     request_stop_task = pyqtSignal(str)
     request_get_log = pyqtSignal(str)
     request_shutdown = pyqtSignal()
+    STYLE_SHEET = None  # will be set later
 
     def __init__(self):
         super().__init__()
+        if self.STYLE_SHEET: self.setStyleSheet(self.STYLE_SHEET)
         self.setWindowTitle("PDF To Word")
         self.resize(800, 500)
 
@@ -280,16 +316,8 @@ class MainWindow(QMainWindow):
 
     # ---------- icons ----------
     def _load_icons(self):
-        # icons = {}
-        # for name, filename in ICON_FILES.items():
-        #     path = os.path.join(ICON_DIR, filename)
-        #     if not os.path.isfile(path):
-        #         raise FileNotFoundError(f"缺少图标文件: {path}")
-        #     icons[name] = QIcon(path)
-        # return icons
         svg_data_mapped = {name:svg_data[filename] for name, filename in ICON_FILES.items()}
         return SvgIconManager(svg_data_mapped)
-
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -301,7 +329,7 @@ class MainWindow(QMainWindow):
 
         # 左侧导航
         nav = QWidget()
-        nav.setFixedWidth(64)
+        nav.setFixedWidth(80)
         nav_layout = QVBoxLayout(nav)
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(0)
@@ -309,20 +337,22 @@ class MainWindow(QMainWindow):
 
         self.settings_btn = QToolButton()
         self.settings_btn.setIcon(self._icons["settings"])
-        self.settings_btn.setIconSize(QSize(32, 32))
+        self.settings_btn.setIconSize(QSize(40, 40))
         self.settings_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.settings_btn.setCheckable(True)
-        self.settings_btn.setToolTip("转换设置")
+        self.settings_btn.setToolTip(STRINGS["settings"])
         self.settings_btn.setAutoRaise(True)
+        self.settings_btn.setObjectName("navButton")
 
         self.files_btn = QToolButton()
         self.files_btn.setIcon(self._icons["file_list"])
-        self.files_btn.setIconSize(QSize(32, 32))
+        self.files_btn.setIconSize(QSize(40, 40))
         self.files_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.files_btn.setCheckable(True)
         self.files_btn.setChecked(True)
-        self.files_btn.setToolTip("文件列表")
+        self.files_btn.setToolTip(STRINGS["file_list"])
         self.files_btn.setAutoRaise(True)
+        self.files_btn.setObjectName("navButton")
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
@@ -342,37 +372,49 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.stack, 1)
 
     def _create_settings_page(self):
-        page = DropWidget()
-        page.setAcceptDrops(True)
-        page.files_dropped.connect(self._on_files_dropped)
+        page = QWidget()
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(20, 20, 20, 20)
 
-        form = QFormLayout(page)
-        form.setContentsMargins(20, 20, 20, 20)
+        card = QFrame()
+        card.setObjectName("card")
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(24, 24, 24, 24)
+        card_layout.setSpacing(16)
+
+        form = QFormLayout()
+        form.setVerticalSpacing(16)
+        form.setLabelAlignment(Qt.AlignRight)
 
         self.output_dir_edit = QLineEdit()
-        self.output_dir_edit.setPlaceholderText("留空表示使用源文件目录")
+        self.output_dir_edit.setPlaceholderText(STRINGS["output_dir_placeholder"])
 
         browse_btn = QToolButton()
         browse_btn.setIcon(self._icons["folder"])
-        browse_btn.setToolTip("选择输出目录")
+        browse_btn.setToolTip(STRINGS["browse_output_dir"])
         browse_btn.clicked.connect(self._browse_output_dir)
 
         dir_layout = QHBoxLayout()
         dir_layout.addWidget(self.output_dir_edit)
         dir_layout.addWidget(browse_btn)
-        form.addRow("输出目录：", dir_layout)
+        form.addRow(STRINGS["output_dir_label"], dir_layout)
 
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
-        self.password_edit.setPlaceholderText("加密 PDF 的密码（可留空）")
-        form.addRow("PDF 密码：", self.password_edit)
+        self.password_edit.setPlaceholderText(STRINGS["pdf_password_placeholder"])
+        form.addRow(STRINGS["pdf_password_label"], self.password_edit)
 
+        card_layout.addLayout(form)
+        outer.addWidget(card, 1)   # 占满剩余宽度
         return page
+
 
     def _create_files_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(20, 20, 20, 20)
 
         self.list_widget = FileListWidget()
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -381,9 +423,9 @@ class MainWindow(QMainWindow):
         )
         self.list_widget.files_dropped.connect(self._on_files_dropped)
 
-        self._empty_hint = QLabel("将 PDF 文件或文件夹拖拽到此处")
+        self._empty_hint = QLabel(STRINGS["drop_files_hint"])
         self._empty_hint.setAlignment(Qt.AlignCenter)
-        self._empty_hint.setStyleSheet("color: #888888; font-size: 24px;")
+        self._empty_hint.setStyleSheet("color: #888888;")
         self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.list_widget.set_empty_hint(self._empty_hint)
 
@@ -391,7 +433,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _browse_output_dir(self):
-        directory = QFileDialog.getExistingDirectory(self, "选择输出目录")
+        directory = QFileDialog.getExistingDirectory(self, STRINGS["browse_output_dir"])
         if directory:
             self.output_dir_edit.setText(directory)
 
@@ -461,7 +503,7 @@ class MainWindow(QMainWindow):
             added_any = True
 
         if not added_any:
-            self.statusBar().showMessage("未添加任何新 PDF 文件", 3000)
+            self.statusBar().showMessage(STRINGS["no_new_files_added"], 3000)
 
     def _add_item(self, norm, src_path):
         item = QListWidgetItem()
@@ -516,6 +558,9 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, data)
             self._refresh_item(item)
 
+            if self._log_dialog is not None and self._log_dialog._task_id == tid:
+                self._log_dialog.update_task_status(task.get("status", ""))
+
     def _on_task_submitted(self, task_id, src_path):
         norm = os.path.normcase(os.path.abspath(src_path))
         row = self._src_path_to_row.get(norm)
@@ -543,11 +588,11 @@ class MainWindow(QMainWindow):
         data["status"] = "failed"
         item.setData(Qt.UserRole, data)
         self._refresh_item(item)
-        self.statusBar().showMessage(f"提交失败：{error}", 3000)
+        self.statusBar().showMessage(STRINGS["submit_failed"].format(error), 3000)
 
     def _on_task_stopped(self, task_id, success):
         if not success:
-            self.statusBar().showMessage(f"停止失败：{task_id}", 3000)
+            self.statusBar().showMessage(STRINGS["stop_failed"].format(task_id), 3000)
         # 成功时状态由轮询更新
 
     def _on_worker_error(self, message):
@@ -564,7 +609,7 @@ class MainWindow(QMainWindow):
         item.setText(f"{os.path.basename(src)} — {status_text}")
         item.setForeground(QBrush(STATUS_COLOR.get(status, QColor("#000000"))))
 
-        parts = [f"文件: {src}", f"状态: {status_text}"]
+        parts = [STRINGS["part_from_file"].format(src), STRINGS["part_from_status"].format(status_text)]
         tid = data.get("task_id")
         if tid:
             parts.append(f"task_id: {tid}")
@@ -582,11 +627,11 @@ class MainWindow(QMainWindow):
             return
 
         menu = QMenu(self)
-        act_log = menu.addAction(self._icons["description"], "查看日志")
-        act_stop = menu.addAction(self._icons["stop"], "停止任务")
+        act_log = menu.addAction(self._icons["description"], STRINGS["view_log"])
+        act_stop = menu.addAction(self._icons["stop"], STRINGS["stop_task"])
         menu.addSeparator()
-        act_remove = menu.addAction(self._icons["delete"], "移除选中")
-        act_clear = menu.addAction(self._icons["clear_all"], "清空已完成")
+        act_remove = menu.addAction(self._icons["delete"], STRINGS["remove_selected"])
+        act_clear = menu.addAction(self._icons["clear_all"], STRINGS["clear_finished"])
 
         chosen = menu.exec_(self.list_widget.mapToGlobal(pos))
         if chosen == act_log:
@@ -694,14 +739,192 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+# style-sheet
+MainWindow.STYLE_SHEET = """
+* {
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    font-size: 24px;
+    color: #333333;
+}
+
+QMainWindow {
+    background-color: #f5f5f5;
+}
+
+/* ===== 左侧导航按钮 ===== */
+#navButton {
+    border: none;
+    border-left: 4px solid transparent;
+    border-radius: 8px;
+    padding: 8px;
+    margin: 4px 8px;
+    background: transparent;
+}
+
+#navButton:hover {
+    background-color: rgba(0, 0, 0, 0.06);
+}
+
+#navButton:checked {
+    background-color: #e3f2fd;
+    border-left-color: #1976d2;
+}
+
+/* ===== 输入框 ===== */
+QLineEdit {
+    padding: 6px 10px;
+    border: 1px solid #cccccc;
+    border-radius: 6px;
+    background: #ffffff;
+    min-height: 20px;
+    selection-background-color: #bbdefb;
+}
+
+QLineEdit:focus {
+    border-color: #2196f3;
+}
+
+/* ===== 卡片 ===== */
+QFrame#card {
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+}
+
+/* ===== 文件列表 ===== */
+QListWidget {
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 4px;
+    outline: none;
+    alternate-background-color: #fafafa;
+}
+
+QListWidget::item {
+    padding: 8px;
+    margin: 2px;
+    border-radius: 6px;
+}
+
+QListWidget::item:hover {
+    background-color: #f0f0f0;
+}
+
+QListWidget::item:selected {
+    background-color: #e3f2fd;
+}
+
+/* ===== 日志窗口 ===== */
+QPlainTextEdit {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    border: 1px solid #cccccc;
+    border-radius: 6px;
+    padding: 8px;
+    selection-background-color: #264f78;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+}
+
+/* ===== 普通按钮 ===== */
+QPushButton {
+    padding: 6px 14px;
+    border: 1px solid #cccccc;
+    border-radius: 6px;
+    background: #ffffff;
+}
+
+QPushButton:hover {
+    background-color: #f0f0f0;
+}
+
+QPushButton:pressed {
+    background-color: #e0e0e0;
+}
+
+/* ===== 工具栏按钮（浏览按钮等） ===== */
+QToolButton {
+    border: none;
+    border-radius: 6px;
+    padding: 6px;
+    background: transparent;
+}
+
+QToolButton:hover {
+    background-color: rgba(0, 0, 0, 0.06);
+}
+
+/* ===== 滚动条 ===== */
+QScrollBar:vertical {
+    border: none;
+    background: #f5f5f5;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #c0c0c0;
+    border-radius: 4px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #a0a0a0;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+    width: 0;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background: #f5f5f5;
+    height: 8px;
+    margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background: #c0c0c0;
+    border-radius: 4px;
+    min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #a0a0a0;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    height: 0;
+    width: 0;
+}
+
+/* ===== 菜单 ===== */
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 6px 24px 6px 12px;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background-color: #e3f2fd;
+}
+
+/* ===== 对话框 ===== */
+QDialog {
+    background: #f5f5f5;
+}
+
+QStatusBar {
+    background: #eeeeee;
+    color: #666666;
+}
+"""
+
+
 def main():
     app = QApplication(sys.argv)
-    try:
-        window = MainWindow()
-    except FileNotFoundError as e:
-        if PRINT_ERROR: traceback.print_exc()
-        QMessageBox.critical(None, "启动失败", str(e))
-        sys.exit(1)
+    app.setStyle("Fusion")
+    window = MainWindow()
     sys.exit(app.exec_())
 
 

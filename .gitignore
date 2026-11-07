@@ -1,3 +1,5 @@
 venv/*
 test*
 *.pyc
+build
+dist
